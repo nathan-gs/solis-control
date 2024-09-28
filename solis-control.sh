@@ -99,6 +99,18 @@ do
   esac
 done
 
+if [[ -z "$InverterId" || -z "$KeyId" || -z "$KeySecret" ]]; then
+  warn "InverterId, KeyId and KeySecret must be set"
+  help
+  exit 1
+fi
+
+if [[ "$UseMqtt" == true && ( -z "$MqttHost" || -z "$MqttUser" || -z "$MqttPassword" ) ]]; then
+  warn "MqttHost, MqttUser and MqttPassword must be set"
+  help
+  exit 1
+fi
+
 # https://oss.soliscloud.com/doc/SolisCloud%20Device%20Control%20API%20V2.0.pdf
 
 Battery_OverdischargeSocCid=158
@@ -153,11 +165,11 @@ solisReadCid() {
   if [[ $(echo $output | jq -r '.code') == "0" ]];
   then
     echo $output | jq -r '.data.msg'
-    exit 0
+    return 0
   else
     warn "failed, complete error: "
     warn $output
-    exit 1
+    return 1
   fi
 }
 
@@ -178,6 +190,11 @@ solisWriteCid() {
   fi  
 
   code=$(echo "$output" | jq -r '.code' 2>/dev/null)
+  if [[ -z "$code" || ! "$code" =~ ^[0-9]+$ ]]; then
+    warn "Failed to parse 'code' from output"
+    warn "$output"
+    return 1
+  fi
   
   if [[ "$code" -ne 0 ]]; then
     warn "Failed, complete error: "
@@ -194,7 +211,7 @@ checkTime() {
     true
   else
     echo "Invalid date: $input"
-    exit 1
+    return 1
   fi
 }
 
@@ -213,46 +230,118 @@ writeSelfUseChargeAndDischarge() {
   echo "$chargeCurrent,$dischargeCurrent,$chargeTimeStart-$chargeTimeEnd,$dischargeTimeStart-$dischargeTimeEnd"
 }
 
+mqttPublish() {
+  topic=$1
+  message=$2
+  if [[ "$UseMqtt" == false ]]; then
+    return 0
+  fi
+  mosquitto_pub -h $MqttHost -t "$topic" -m "$message" -u $MqttUser -P $MqttPassword
+}
+
+haDiscoverySwitch() {
+  topic=$1
+  haId="${topic//\//_}"
+  
+  if [[ "$MqttPublishHaDiscovery" == false ]]; then
+    return 0
+  fi  
+
+  content=$(jq -n -c \
+    --arg COMMAND_TOPIC "$topic/set" \
+    --arg NAME "$topic" \
+    --arg OBJECT_ID "$haId" \
+    --arg STATE_TOPIC "$topic" \
+    '{ command_topic: $COMMAND_TOPIC, name: $NAME, object_id: $OBJECT_ID, payload_off: "0", payload_on: "1", state_topic: $STATE_TOPIC }'
+  )
+  mqttPublish "homeassistant/switch/$haId/switch/config" "$content"
+  log "Published Home Assistant discovery for $topic"
+}
+
+haDiscoveryNumber() {
+  topic=$1
+  min=$2
+  max=$3
+
+  if [[ "$MqttPublishHaDiscovery" == false ]]; then
+    return 0
+  fi
+
+  haId="${topic//\//_}"
+  content=$(jq -n -c \
+    --arg COMMAND_TOPIC "$topic/set" \
+    --arg NAME "$topic" \
+    --arg OBJECT_ID "$haId" \
+    --arg STATE_TOPIC "$topic" \
+    --arg min "$min" \
+    --arg max "$max" \
+    '{ command_topic: $COMMAND_TOPIC, name: $NAME, object_id: $OBJECT_ID, state_topic: $STATE_TOPIC, unit_of_measurement: "%", device_class: "battery", min: $min, max: $max, step: 1, mode: "box" }'
+  )
+  mqttPublish "homeassistant/number/$haId/number/config" "$content"
+  log "Published Home Assistant discovery for $topic"
+}
+
+mqttPublishHaDiscovery() {
+  
+
+  log "Publishing Home Assistant discovery"
+
+  #haDiscoverySwitch "$MqttPrefix"selfuse/AllowGridCharging
+  haDiscoveryNumber "$MqttPrefix"battery/OverdischargeSoc 10 40
+  haDiscoveryNumber "$MqttPrefix"battery/ForcechargeSoc 4 40
+
+}
+
 mqttMessageRouter() {
   local topic="$1"
   local message="$2"
     
   log "Reacting to topic: $topic with message: $message"
   case $topic in
-    $MqttPrefix"battery/OverdischargeSoc")
+    $MqttPrefix"battery/OverdischargeSoc/set")
       if [[ "$message" =~ ^[0-9]+$ && "$message" -le 40 ]]; then
         if solisWriteCid $Battery_OverdischargeSocCid "$message"; then
+          value=$(solisReadCid $Battery_OverdischargeSocCid)
+          mqttPublish "$MqttPrefix"battery/OverdischargeSoc $value
+          haDiscoveryNumber "$MqttPrefix"battery/ForcechargeSoc 4 $value
           log "OverdischargeSoc set to $message"
         else
           warn "Failed to set OverdischargeSoc"
         fi
       else
-        warn "$MqttPrefix"battery/OverdischargeSoc" message must be a number between 0 and 40, received $message"
+        warn "$MqttPrefix"battery/OverdischargeSoc/set" message must be a number between 0 and 40, received $message"
       fi
       ;;
-    $MqttPrefix"battery/ForcechargeSoc")
-      if [[ "$message" =~ ^[0-9]+$ && "$message" -le 10 ]]; then
+    $MqttPrefix"battery/ForcechargeSoc/set")
+      if [[ "$message" =~ ^[0-9]+$ && "$message" -le 40 ]]; then
         if solisWriteCid $Battery_ForcechargeSocCid "$message"; then
+          mqttPublish "$MqttPrefix"battery/ForcechargeSoc $(solisReadCid $Battery_ForcechargeSocCid)          
           log "ForcechargeSoc set to $message"
         else
           warn "Failed to set ForcechargeSoc"
         fi
       else
-        warn "$MqttPrefix"battery/ForcechargeSoc" message must be a number between 0 and 10, received $message"
+        warn "$MqttPrefix"battery/ForcechargeSoc/set" message must be a number between 0 and 10, received $message"
       fi
       ;;
-    $MqttPrefix"selfuse/ChargeAndDischarge")
-      log "ChargeAndDischarge not implemented yet"
+    $MqttPrefix"selfuse/ChargeAndDischarge/set")
+      warn "ChargeAndDischarge not implemented yet"
       ;;
-    $MqttPrefix"selfuse/AllowGridCharging")
+    $MqttPrefix"selfuse/AllowGridCharging/set")      
       if [[ "$message" == "0" || "$message" == "1" ]]; then
-        if solisWriteCid $SelfUse_AllowGridChargingCid "$message"; then
-          log "AllowGridCharging set to $message"
-        else
-          warn "Failed to set AllowGridCharging"
-        fi
+        warn "AllowCharging not implemented yet"
+        #solisReadCid $SelfUse_AllowGridChargingCid
+        #if solisWriteCid $SelfUse_AllowGridChargingCid "$message"; then
+        #  mqttPublish "$MqttPrefix"selfuse/AllowGridCharging $(solisReadCid $SelfUse_AllowGridChargingCid)
+        #  log "AllowGridCharging set to $message"
+        #else
+        #  warn "Failed to set AllowGridCharging"
+        #fi
+        # Currently the error is
+        # {"success":true,"code":"B0218","msg":"This command needs to be read and then set","data":null}
+        #
       else
-        warn "$MqttPrefix"selfuse/AllowGridCharging" message must be 0 or 1, received $message"
+        warn "$MqttPrefix"selfuse/AllowGridCharging/set" message must be 0 or 1, received $message"
       fi
       ;;
     *)
@@ -265,10 +354,19 @@ mqttMessageRouter() {
 subscribeMqtt() {
 
   while true; do
+    log "Subscribing to the following MQTT topics:"
+    log " - $MqttPrefix"battery/OverdischargeSoc/set
+    log " - $MqttPrefix"battery/ForcechargeSoc/set
+    log " - $MqttPrefix"selfuse/ChargeAndDischarge/set
+    log " - $MqttPrefix"selfuse/AllowGridCharging/set
+
+
     mosquitto_sub \
       -h $MqttHost \
-      -t $MqttPrefix"battery/OverdischargeSoc" \
-      -t $MqttPrefix"battery/ForcechargeSoc" \
+      -t $MqttPrefix"battery/OverdischargeSoc/set" \
+      -t $MqttPrefix"battery/ForcechargeSoc/set" \
+      -t $MqttPrefix"selfuse/ChargeAndDischarge/set" \
+      -t $MqttPrefix"selfuse/AllowGridCharging/set" \
       -u $MqttUser \
       -P $MqttPassword \
       -v | while read -r line; do
@@ -277,11 +375,23 @@ subscribeMqtt() {
         mqttMessageRouter "$topic" "$message"
       done
 
-    echo "mosquitto_sub exited, restarting in 5 seconds"
+    warn "mosquitto_sub exited, restarting in 5 seconds"
     sleep 5
   done
 }
 
+initialReadAndPublish() {
+  log "Initial reading values and publishing to MQTT"
+  value=$(solisReadCid $Battery_OverdischargeSocCid)
+  mqttPublish "$MqttPrefix"battery/OverdischargeSoc $value
+  haDiscoveryNumber "$MqttPrefix"battery/ForcechargeSoc 4 $value
+
+  mqttPublish "$MqttPrefix"battery/ForcechargeSoc $(solisReadCid $Battery_ForcechargeSocCid)
+  #mqttPublish "$MqttPrefix"selfuse/AllowGridCharging $(solisReadCid $SelfUse_AllowGridChargingCid)
+}
+
+mqttPublishHaDiscovery
+initialReadAndPublish
 subscribeMqtt
 
 exit 0
