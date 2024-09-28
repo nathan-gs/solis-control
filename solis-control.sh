@@ -236,7 +236,7 @@ mqttPublish() {
   if [[ "$UseMqtt" == false ]]; then
     return 0
   fi
-  mosquitto_pub -h $MqttHost -t "$topic" -m "$message" -u $MqttUser -P $MqttPassword
+  mosquitto_pub -h $MqttHost -t "$topic" -m "$message" -u $MqttUser -P $MqttPassword --retain 
 }
 
 haDiscoverySwitch() {
