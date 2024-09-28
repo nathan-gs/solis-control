@@ -288,7 +288,7 @@ mqttPublishHaDiscovery() {
 
   #haDiscoverySwitch "$MqttPrefix"selfuse/AllowGridCharging
   haDiscoveryNumber "$MqttPrefix"battery/OverdischargeSoc 10 40
-  haDiscoveryNumber "$MqttPrefix"battery/ForcechargeSoc 4 40
+  haDiscoveryNumber "$MqttPrefix"battery/ForcechargeSoc 4 20
 
 }
 
@@ -303,8 +303,13 @@ mqttMessageRouter() {
         if solisWriteCid $Battery_OverdischargeSocCid "$message"; then
           value=$(solisReadCid $Battery_OverdischargeSocCid)
           mqttPublish "$MqttPrefix"battery/OverdischargeSoc $value
-          haDiscoveryNumber "$MqttPrefix"battery/ForcechargeSoc 4 $value
-          log "OverdischargeSoc set to $message"
+          if (( value <= 20 )); then
+            maxForcechargeSoc=$value
+          else
+            maxForcechargeSoc=20
+          fi
+          haDiscoveryNumber "$MqttPrefix"battery/ForcechargeSoc 4 $maxForcechargeSoc
+          log "OverdischargeSoc set to $value"
         else
           warn "Failed to set OverdischargeSoc"
         fi
@@ -313,7 +318,7 @@ mqttMessageRouter() {
       fi
       ;;
     $MqttPrefix"battery/ForcechargeSoc/set")
-      if [[ "$message" =~ ^[0-9]+$ && "$message" -le 40 ]]; then
+      if [[ "$message" =~ ^[0-9]+$ && "$message" -le 20 ]]; then
         if solisWriteCid $Battery_ForcechargeSocCid "$message"; then
           mqttPublish "$MqttPrefix"battery/ForcechargeSoc $(solisReadCid $Battery_ForcechargeSocCid)          
           log "ForcechargeSoc set to $message"
@@ -321,7 +326,7 @@ mqttMessageRouter() {
           warn "Failed to set ForcechargeSoc"
         fi
       else
-        warn "$MqttPrefix"battery/ForcechargeSoc/set" message must be a number between 0 and 10, received $message"
+        warn "$MqttPrefix"battery/ForcechargeSoc/set" message must be a number between 0 and 20, received $message"
       fi
       ;;
     $MqttPrefix"selfuse/ChargeAndDischarge/set")
@@ -383,8 +388,12 @@ subscribeMqtt() {
 initialReadAndPublish() {
   log "Initial reading values and publishing to MQTT"
   value=$(solisReadCid $Battery_OverdischargeSocCid)
-  mqttPublish "$MqttPrefix"battery/OverdischargeSoc $value
-  haDiscoveryNumber "$MqttPrefix"battery/ForcechargeSoc 4 $value
+  if (( value <= 20 )); then
+    maxForcechargeSoc=$value
+  else
+    maxForcechargeSoc=20
+  fi
+  haDiscoveryNumber "$MqttPrefix"battery/ForcechargeSoc 4 $maxForcechargeSoc
 
   mqttPublish "$MqttPrefix"battery/ForcechargeSoc $(solisReadCid $Battery_ForcechargeSocCid)
   #mqttPublish "$MqttPrefix"selfuse/AllowGridCharging $(solisReadCid $SelfUse_AllowGridChargingCid)
