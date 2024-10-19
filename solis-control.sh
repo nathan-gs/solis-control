@@ -303,7 +303,7 @@ mqttMessageRouter() {
         if solisWriteCid $Battery_OverdischargeSocCid "$message"; then
           value=$(solisReadCid $Battery_OverdischargeSocCid)
           mqttPublish "$MqttPrefix"battery/OverdischargeSoc $value
-          if (( value <= 20 )); then
+          if (( $value <= 20 )); then
             maxForcechargeSoc=$value
           else
             maxForcechargeSoc=20
