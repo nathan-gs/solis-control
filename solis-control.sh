@@ -398,6 +398,7 @@ subscribeMqtt() {
     log "Subscribing to the following MQTT topics:"
     log " - $MqttPrefix"battery/OverdischargeSoc/set
     log " - $MqttPrefix"battery/ForcechargeSoc/set
+    log " - $MqttPrefix"battery/MaxGridPower/set
     log " - $MqttPrefix"selfuse/ChargeAndDischarge/set
     log " - $MqttPrefix"selfuse/AllowGridCharging/set
 
@@ -406,6 +407,7 @@ subscribeMqtt() {
       -h $MqttHost \
       -t $MqttPrefix"battery/OverdischargeSoc/set" \
       -t $MqttPrefix"battery/ForcechargeSoc/set" \
+      -t $MqttPrefix"battery/MaxGridPower/set" \
       -t $MqttPrefix"selfuse/ChargeAndDischarge/set" \
       -t $MqttPrefix"selfuse/AllowGridCharging/set" \
       -u $MqttUser \
