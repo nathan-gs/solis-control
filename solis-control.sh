@@ -258,7 +258,7 @@ haDiscoverySwitch() {
   log "Published Home Assistant discovery for $topic"
 }
 
-haDiscoveryNumber() {
+haDiscoveryBatteryPercentage() {
   topic=$1
   min=$2
   max=$3
@@ -281,14 +281,38 @@ haDiscoveryNumber() {
   log "Published Home Assistant discovery for $topic"
 }
 
+haDiscoveryBatteryMaxGridPower() {
+  topic=$MqttPrefix"battery/MaxGridPower"
+  min=300
+  max=5000
+
+  if [[ "$MqttPublishHaDiscovery" == false ]]; then
+    return 0
+  fi
+
+  haId="${topic//\//_}"
+  content=$(jq -n -c \
+    --arg COMMAND_TOPIC "$topic/set" \
+    --arg NAME "$topic" \
+    --arg OBJECT_ID "$haId" \
+    --arg STATE_TOPIC "$topic" \
+    --arg min "$min" \
+    --arg max "$max" \
+    '{ command_topic: $COMMAND_TOPIC, name: $NAME, object_id: $OBJECT_ID, state_topic: $STATE_TOPIC, unit_of_measurement: "W", device_class: "power", min: $min, max: $max, step: 100, mode: "box" }'
+  )
+  mqttPublish "homeassistant/number/$haId/number/config" "$content"
+  log "Published Home Assistant discovery for $topic"
+}
+
 mqttPublishHaDiscovery() {
   
 
   log "Publishing Home Assistant discovery"
 
   #haDiscoverySwitch "$MqttPrefix"selfuse/AllowGridCharging
-  haDiscoveryNumber "$MqttPrefix"battery/OverdischargeSoc 10 40
-  haDiscoveryNumber "$MqttPrefix"battery/ForcechargeSoc 4 20
+  haDiscoveryBatteryPercentage "$MqttPrefix"battery/OverdischargeSoc 10 40
+  haDiscoveryBatteryPercentage "$MqttPrefix"battery/ForcechargeSoc 4 20
+  haDiscoveryBatteryMaxGridPower
 
 }
 
@@ -308,7 +332,7 @@ mqttMessageRouter() {
           else
             maxForcechargeSoc=20
           fi
-          haDiscoveryNumber "$MqttPrefix"battery/ForcechargeSoc 4 $maxForcechargeSoc
+          haDiscoveryBatteryPercentage "$MqttPrefix"battery/ForcechargeSoc 4 $maxForcechargeSoc
           log "OverdischargeSoc set to $value"
         else
           warn "Failed to set OverdischargeSoc"
@@ -327,6 +351,18 @@ mqttMessageRouter() {
         fi
       else
         warn "$MqttPrefix"battery/ForcechargeSoc/set" message must be a number between 0 and 20, received $message"
+      fi
+      ;;
+    $MqttPrefix"battery/MaxGridPower/set")
+      if [[ "$message" =~ ^[0-9]+$ && "$message" -le 5000 ]]; then
+        if solisWriteCid $Battery_MaxGridPower "$message"; then
+          mqttPublish "$MqttPrefix"battery/MaxGridPower $(solisReadCid $Battery_MaxGridPower)          
+          log "Battery_MaxGridPower set to $message"
+        else
+          warn "Failed to set Battery_MaxGridPower"
+        fi
+      else
+        warn "$MqttPrefix"battery/MaxGridPower/set" message must be a number between 300 and 5000, received $message"
       fi
       ;;
     $MqttPrefix"selfuse/ChargeAndDischarge/set")
@@ -393,9 +429,10 @@ initialReadAndPublish() {
   else
     maxForcechargeSoc=20
   fi
-  haDiscoveryNumber "$MqttPrefix"battery/ForcechargeSoc 4 $maxForcechargeSoc
+  haDiscoveryBatteryPercentage "$MqttPrefix"battery/ForcechargeSoc 4 $maxForcechargeSoc
 
   mqttPublish "$MqttPrefix"battery/ForcechargeSoc $(solisReadCid $Battery_ForcechargeSocCid)
+  mqttPublish "$MqttPrefix"battery/MaxGridPower $(solisReadCid $Battery_MaxGridPower)          
   #mqttPublish "$MqttPrefix"selfuse/AllowGridCharging $(solisReadCid $SelfUse_AllowGridChargingCid)
 }
 
